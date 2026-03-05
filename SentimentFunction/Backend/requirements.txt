@@ -1,0 +1,5 @@
+azure-functions
+azure-ai-textanalytics
+azure-core
+azure-identity
+pyodbc
