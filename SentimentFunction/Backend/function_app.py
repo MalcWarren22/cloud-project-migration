@@ -30,6 +30,7 @@ logger.setLevel(logging.INFO)
 # ----------------------------
 DEFAULT_TOPIC = "iphone_vs_android"
 DEFAULT_YT_QUERY = "iphone vs android"
+DEFAULT_TWITTER_QUERY = "iphone OR android OR samsung"
 
 YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 YOUTUBE_COMMENTS_URL = "https://www.googleapis.com/youtube/v3/commentThreads"
@@ -123,11 +124,13 @@ _URL_RE = re.compile(r"http\S+")
 _MENTION_RE = re.compile(r"@\w+")
 _MULTI_PUNCT_RE = re.compile(r"([!?\.]){2,}")
 _EMOJI_RE = re.compile(r"[\U00010000-\U0010ffff]")
+_RT_PREFIX_RE = re.compile(r"^RT\s+", re.IGNORECASE)
 
 def clean_text(text: str) -> str:
     t = (text or "").strip()
     if not t:
         return ""
+    t = _RT_PREFIX_RE.sub("", t)
     t = _URL_RE.sub("", t)
     t = _MENTION_RE.sub("", t)
     t = _TIMESTAMP_RE.sub("", t)
@@ -136,6 +139,15 @@ def clean_text(text: str) -> str:
     t = _MULTI_PUNCT_RE.sub(r"\1", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
+
+def is_likely_non_english(text: str) -> bool:
+    """Returns True if more than 35% of characters are non-ASCII — used to skip
+    tweets that slipped through the lang:en API filter."""
+    t = (text or "").strip()
+    if not t:
+        return True
+    non_ascii = sum(1 for c in t if ord(c) > 127)
+    return (non_ascii / len(t)) > 0.35
 
 def safe_for_text_analytics(text: str) -> str:
     t = (text or "").strip()
@@ -506,6 +518,13 @@ _INTENSIFIERS = {
     "very","really","so","extremely","absolutely","incredibly","totally","completely",
     "super","ultra","genuinely","truly","seriously","literally","way","much","far",
 }
+_NEUTRAL_ANCHORS = {
+    # Mild / ambiguous words that signal no strong opinion
+    "fine","okay","ok","decent","alright","acceptable","passable","adequate","fair",
+    "average","ordinary","normal","standard","moderate","reasonable","neutral",
+    "depends","depending","subjective","mixed","both","either","whatever","maybe",
+    "perhaps","guess","suppose","think","feel","opinion","preference","prefer",
+}
 
 def _tokenize_basic(text: str) -> List[str]:
     t = (text or "").lower()
@@ -518,6 +537,7 @@ def lexicon_sentiment_one(text: str, *, min_margin: float) -> Tuple[str, Dict[st
 
     pos = 0.0
     neg = 0.0
+    anchor_count = 0
     for i, w in enumerate(tokens):
         prev = tokens[i - 1] if i > 0 else ""
         prev2 = tokens[i - 2] if i > 1 else ""
@@ -535,16 +555,25 @@ def lexicon_sentiment_one(text: str, *, min_margin: float) -> Tuple[str, Dict[st
                 pos += weight
             else:
                 neg += weight
+        elif w in _NEUTRAL_ANCHORS:
+            anchor_count += 1
 
     total = pos + neg
     if total == 0:
-        # still drawable / not dead-neutral
-        scores = {"positive": 0.15, "neutral": 0.70, "negative": 0.15}
+        # If neutral anchor words are present with no directional signal,
+        # return a confident neutral rather than a drawable 0.15/0.15 split.
+        if anchor_count >= 1:
+            scores = {"positive": 0.05, "neutral": 0.90, "negative": 0.05}
+        else:
+            scores = {"positive": 0.15, "neutral": 0.70, "negative": 0.15}
         scores = _coerce_scores(scores)
         return sentiment_from_scores(scores, min_margin=min_margin), scores
 
     strength = min(1.0, total / 6.0)      # 0..1
     neutral = 1.0 - (0.75 * strength)     # 1..0.25
+    # Neutral anchors dampen the directional strength slightly
+    if anchor_count >= 2:
+        neutral = min(1.0, neutral + 0.10)
     remaining = 1.0 - neutral
     p = remaining * (pos / total)
     n = remaining * (neg / total)
@@ -577,6 +606,8 @@ def hybrid_sentiment_one(text: str, *, min_margin: float) -> Tuple[str, Dict[str
     Dead-neutral: neu >= 0.92 (Azure literally has no opinion).
     Tied: abs(pos - neg) < 0.02, i.e. Azure's 0.25-step scoring produced an exact
     tie such as {pos:0.25, neu:0.50, neg:0.25} — lexicon breaks the tie.
+    Neutral-anchor override: if lexicon detects only neutral-anchor words (neu >= 0.85)
+    and Azure's directional lead is weak (< 0.40), defer to lexicon's neutral call.
     """
     label, scores = ai_language_sentiment_one(text, min_margin=min_margin)
 
@@ -585,7 +616,68 @@ def hybrid_sentiment_one(text: str, *, min_margin: float) -> Tuple[str, Dict[str
         if l2 != "neutral" and _lexicon_is_decisive(s2):
             return l2, s2
 
+    if label != "neutral":
+        az_lead = max(float(scores.get("positive", 0.0)), float(scores.get("negative", 0.0)))
+        if az_lead < 0.40:
+            l2, s2 = lexicon_sentiment_one(text, min_margin=min_margin)
+            if l2 == "neutral" and float(s2.get("neutral", 0.0)) >= 0.85:
+                return l2, s2
+
     return label, scores
+
+def ai_language_sentiment_batch(
+    texts: List[str], *, min_margin: float
+) -> List[Tuple[str, Dict[str, float]]]:
+    """
+    Score a list of pre-cleaned texts using Azure AI Language with batches of up to 10
+    (the API limit per call). Applies the same hybrid policy as hybrid_sentiment_one:
+    lexicon fallback for dead-neutral/tied Azure results, and neutral-anchor override
+    for weak Azure signals.
+    Returns a list of (label, scores) in the same order as the input.
+    """
+    BATCH_SIZE = 10
+    _neutral_default = ("neutral", {"positive": 0.0, "neutral": 1.0, "negative": 0.0})
+
+    azure_out: List[Tuple[str, Dict[str, float]]] = []
+    client = get_text_analytics_client()
+
+    for i in range(0, len(texts), BATCH_SIZE):
+        batch = texts[i: i + BATCH_SIZE]
+        try:
+            responses = list(client.analyze_sentiment(documents=batch))
+            for res in responses:
+                if getattr(res, "is_error", False):
+                    azure_out.append(_neutral_default)
+                    continue
+                s = _coerce_scores({
+                    "positive": float(res.confidence_scores.positive),
+                    "neutral":  float(res.confidence_scores.neutral),
+                    "negative": float(res.confidence_scores.negative),
+                })
+                azure_out.append((sentiment_from_scores(s, min_margin=min_margin), s))
+        except Exception as e:
+            logger.error("ai_language_sentiment_batch error batch_start=%d: %s", i, e)
+            azure_out.extend([_neutral_default] * len(batch))
+
+    final: List[Tuple[str, Dict[str, float]]] = []
+    for idx, (label, scores) in enumerate(azure_out):
+        text = texts[idx]
+        if _azure_is_dead_neutral(scores) or (label == "neutral" and _azure_is_tied(scores)):
+            l2, s2 = lexicon_sentiment_one(text, min_margin=min_margin)
+            if l2 != "neutral" and _lexicon_is_decisive(s2):
+                final.append((l2, s2))
+                continue
+        if label != "neutral":
+            az_lead = max(float(scores.get("positive", 0.0)), float(scores.get("negative", 0.0)))
+            if az_lead < 0.40:
+                l2, s2 = lexicon_sentiment_one(text, min_margin=min_margin)
+                if l2 == "neutral" and float(s2.get("neutral", 0.0)) >= 0.85:
+                    final.append((l2, s2))
+                    continue
+        final.append((label, scores))
+
+    return final
+
 
 def hybrid_label_from_stored(text: str, scores: Dict[str, float], *, min_margin: float) -> str:
     """
@@ -657,7 +749,8 @@ def fetch_recent(
     SELECT TOP ({limit})
         id, platform, topic, clean_text,
         sentiment_label, sentiment_scores,
-        CONVERT(varchar(33), scored_at, 127) AS scored_at
+        CONVERT(varchar(33), scored_at, 127) AS scored_at,
+        CONVERT(varchar(33), created_at, 127) AS created_at
     FROM dbo.posts_scored
     {sql_where}
     ORDER BY scored_at DESC;
@@ -679,6 +772,7 @@ def fetch_recent(
         label_raw = r[4]
         scores_raw = r[5]
         scored_at = r[6] if r[6] else None
+        created_at_val = r[7] if r[7] else None
 
         label = _normalize_label(label_raw)
 
@@ -707,6 +801,7 @@ def fetch_recent(
             "clean_text": text,
             "sentiment": {"azure_ai": {"label": stable_label, "scores": scores}},
             "scored_at": scored_at,
+            "created_at": created_at_val,
         })
 
     # Backfill rows missing scores (or broken JSON) so your UI starts getting pos/neg immediately.
@@ -904,6 +999,8 @@ def twitter_fetch_tweets(query: str, max_results: int = TWITTER_MAX_RESULTS) -> 
         safe_q += " lang:en"
     if "is:retweet" not in safe_q:
         safe_q += " -is:retweet"
+    if "is:reply" not in safe_q:
+        safe_q += " -is:reply"
 
     client = _get_twitter_client()
 
@@ -911,7 +1008,7 @@ def twitter_fetch_tweets(query: str, max_results: int = TWITTER_MAX_RESULTS) -> 
         response = client.search_recent_tweets(
             query=safe_q,
             max_results=max_results,
-            tweet_fields=["id", "text", "created_at", "author_id"],
+            tweet_fields=["id", "text", "created_at", "author_id", "public_metrics"],
         )
     except tweepy.TweepyException as e:
         logger.error("Twitter search error query=%r: %s", safe_q, e)
@@ -929,13 +1026,21 @@ def twitter_fetch_tweets(query: str, max_results: int = TWITTER_MAX_RESULTS) -> 
         created_at = None
         if getattr(tweet, "created_at", None):
             created_at = tweet.created_at.isoformat()
+        metrics = {}
+        if getattr(tweet, "public_metrics", None):
+            metrics = {
+                "like_count": tweet.public_metrics.get("like_count", 0),
+                "retweet_count": tweet.public_metrics.get("retweet_count", 0),
+                "reply_count": tweet.public_metrics.get("reply_count", 0),
+                "quote_count": tweet.public_metrics.get("quote_count", 0),
+            }
         out.append({
             "_id": f"twitter:tweet:{tweet.id}",
             "platform": "twitter",
             "topic": None,
             "text_raw": text,
             "created_at": created_at,
-            "meta": {"tweet_id": str(tweet.id)},
+            "meta": {"tweet_id": str(tweet.id), "public_metrics": metrics},
         })
 
     logger.info("twitter_fetch_tweets: %d tweets for query=%r", len(out), safe_q)
@@ -1057,32 +1162,66 @@ def _process_twitter_search(payload: Dict[str, Any]) -> None:
 
     now_scored = utc_now()
 
+    stored = 0
+    skipped = 0
+    errored = 0
+    label_counts: Dict[str, int] = {"positive": 0, "negative": 0, "neutral": 0}
+
     for t in tweets:
-        raw = t.get("text_raw", "") or ""
-        cleaned = clean_text(raw)
-        cleaned_safe = safe_for_text_analytics(cleaned)
-        if not cleaned_safe:
-            continue
+        try:
+            raw = t.get("text_raw", "") or ""
+            cleaned = clean_text(raw)
+            cleaned_safe = safe_for_text_analytics(cleaned)
 
-        label, scores = hybrid_sentiment_one(cleaned_safe, min_margin=SENTIMENT_MIN_MARGIN)
+            if not cleaned_safe:
+                skipped += 1
+                continue
 
-        post_id = t.get("_id") or f"twitter:tweet:{uuid.uuid4().hex}"
-        created_at = parse_iso_datetime(t.get("created_at"))
+            if is_likely_non_english(cleaned_safe):
+                skipped += 1
+                continue
 
-        upsert_post_scored(
-            post_id=post_id,
-            platform="twitter",
-            topic=topic,
-            text_raw=raw,
-            clean=cleaned_safe,
-            created_at=created_at,
-            ingested_at=ingested_at,
-            scored_at=now_scored,
-            sentiment_label=label,
-            sentiment_scores_json=json.dumps(scores, ensure_ascii=False),
-        )
+            tokens = _tokenize_basic(cleaned_safe)
+            if len(tokens) < 3:
+                skipped += 1
+                continue
 
-    logger.info("_process_twitter_search: stored %d tweets topic=%s query=%r", len(tweets), topic, query)
+            label, scores = hybrid_sentiment_one(cleaned_safe, min_margin=SENTIMENT_MIN_MARGIN)
+            label_counts[label] = label_counts.get(label, 0) + 1
+
+            post_id = t.get("_id") or f"twitter:tweet:{uuid.uuid4().hex}"
+            created_at = parse_iso_datetime(t.get("created_at"))
+
+            upsert_post_scored(
+                post_id=post_id,
+                platform="twitter",
+                topic=topic,
+                text_raw=raw,
+                clean=cleaned_safe,
+                created_at=created_at,
+                ingested_at=ingested_at,
+                scored_at=now_scored,
+                sentiment_label=label,
+                sentiment_scores_json=json.dumps(scores, ensure_ascii=False),
+            )
+            stored += 1
+
+        except Exception as e:
+            errored += 1
+            logger.warning(
+                "_process_twitter_search: skipping tweet _id=%s due to error: %s",
+                t.get("_id", "?"), e,
+            )
+
+    logger.info(
+        "_process_twitter_search: stored=%d skipped=%d errored=%d "
+        "positive=%d negative=%d neutral=%d topic=%s query=%r",
+        stored, skipped, errored,
+        label_counts.get("positive", 0),
+        label_counts.get("negative", 0),
+        label_counts.get("neutral", 0),
+        topic, query,
+    )
 
 # ----------------------------
 # 3) HTTP API
@@ -1168,6 +1307,200 @@ def ingest_youtube(req: func.HttpRequest, outmsg: func.Out[List[str]]) -> func.H
         return func.HttpResponse(f"ingest_youtube failed: {type(e).__name__}: {e}", status_code=500)
 
 
+@app.route(route="twitter/search", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
+def twitter_search(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Synchronous Twitter/X search: fetch → clean → batch-score → upsert → return rows.
+    Returns scored rows in the same shape as /recent so the frontend can use them directly.
+    No queue involved — results are available immediately in the response.
+    """
+    try:
+        try:
+            body = req.get_json()
+        except Exception:
+            body = {}
+
+        topic = normalize_topic(body.get("topic") or os.getenv("TOPIC_DEFAULT", DEFAULT_TOPIC))
+        query = (body.get("query") or os.getenv("TWITTER_QUERY", DEFAULT_TWITTER_QUERY) or DEFAULT_TWITTER_QUERY).strip()
+        max_results = safe_int(
+            body.get("max_results", os.getenv("TWITTER_MAX_RESULTS_DEFAULT", str(TWITTER_MAX_RESULTS))),
+            TWITTER_MAX_RESULTS, 10, TWITTER_MAX_RESULTS,
+        )
+
+        tweets = twitter_fetch_tweets(query=query, max_results=max_results)
+        if not tweets:
+            return json_response([], status_code=200)
+
+        now_scored = utc_now()
+        ingested_at = now_scored
+
+        valid: List[Dict[str, Any]] = []
+        texts_to_score: List[str] = []
+
+        for t in tweets:
+            raw = t.get("text_raw", "") or ""
+            cleaned = clean_text(raw)
+            cleaned_safe = safe_for_text_analytics(cleaned)
+            if not cleaned_safe or is_likely_non_english(cleaned_safe):
+                continue
+            tokens = _tokenize_basic(cleaned_safe)
+            if len(tokens) < 3:
+                continue
+            valid.append({"tweet": t, "clean": cleaned_safe})
+            texts_to_score.append(cleaned_safe)
+
+        if not texts_to_score:
+            return json_response([], status_code=200)
+
+        scored = ai_language_sentiment_batch(texts_to_score, min_margin=SENTIMENT_MIN_MARGIN)
+
+        rows: List[Dict[str, Any]] = []
+        for item, (label, scores) in zip(valid, scored):
+            t = item["tweet"]
+            cleaned_safe = item["clean"]
+            raw = t.get("text_raw", "") or ""
+            post_id = t.get("_id") or f"twitter:tweet:{uuid.uuid4().hex}"
+            created_at = parse_iso_datetime(t.get("created_at"))
+
+            try:
+                upsert_post_scored(
+                    post_id=post_id,
+                    platform="twitter",
+                    topic=topic,
+                    text_raw=raw,
+                    clean=cleaned_safe,
+                    created_at=created_at,
+                    ingested_at=ingested_at,
+                    scored_at=now_scored,
+                    sentiment_label=label,
+                    sentiment_scores_json=json.dumps(scores, ensure_ascii=False),
+                )
+            except Exception as e:
+                logger.warning("twitter_search: upsert failed id=%s: %s", post_id, e)
+
+            rows.append({
+                "_id": post_id,
+                "platform": "twitter",
+                "topic": topic,
+                "clean_text": cleaned_safe,
+                "sentiment": {"azure_ai": {"label": label, "scores": scores}},
+                "scored_at": now_scored.isoformat(),
+                "created_at": created_at.isoformat() if created_at else None,
+            })
+
+        logger.info(
+            "twitter_search: returned=%d skipped=%d topic=%s query=%r",
+            len(rows), len(tweets) - len(rows), topic, query,
+        )
+        return json_response(rows, status_code=200)
+
+    except Exception as e:
+        logger.exception("twitter_search failed: %s", e)
+        return func.HttpResponse(f"twitter_search failed: {type(e).__name__}: {e}", status_code=500)
+
+
+@app.route(route="youtube/search", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
+def youtube_search(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Synchronous YouTube search: find videos → fetch comments → clean → batch-score → upsert → return rows.
+    Returns scored rows in the same shape as /recent so the frontend can use them directly.
+    No queue involved — results are available immediately in the response.
+    """
+    try:
+        try:
+            body = req.get_json()
+        except Exception:
+            body = {}
+
+        topic = normalize_topic(body.get("topic") or os.getenv("TOPIC_DEFAULT", DEFAULT_TOPIC))
+        query = (body.get("query") or os.getenv("YOUTUBE_QUERY", DEFAULT_YT_QUERY) or DEFAULT_YT_QUERY).strip()
+        max_videos = safe_int(body.get("max_videos", os.getenv("YOUTUBE_MAX_VIDEOS", "5")), 5, 1, QUEUE_TASK_MAX_VIDEOS)
+        comments_per_video = safe_int(body.get("comments_per_video", 200), 200, 1, 500)
+        video_id_override = body.get("videoId")
+
+        now_scored = utc_now()
+        ingested_at = now_scored
+
+        video_ids = [video_id_override] if video_id_override else youtube_search_video_ids(query=query, max_results=max_videos)
+        if not video_ids:
+            return json_response([], status_code=200)
+
+        all_comments: List[Dict[str, Any]] = []
+        for vid in video_ids:
+            try:
+                comments = youtube_fetch_comments(video_id=vid, max_results=comments_per_video)
+                all_comments.extend(comments)
+            except Exception as e:
+                logger.warning("youtube_search: failed to fetch comments for video %s: %s", vid, e)
+
+        if not all_comments:
+            return json_response([], status_code=200)
+
+        valid: List[Dict[str, Any]] = []
+        texts_to_score: List[str] = []
+
+        for c in all_comments:
+            raw = c.get("text_raw", "") or ""
+            cleaned = clean_text(raw)
+            cleaned_safe = safe_for_text_analytics(cleaned)
+            if not cleaned_safe or is_likely_non_english(cleaned_safe):
+                continue
+            tokens = _tokenize_basic(cleaned_safe)
+            if len(tokens) < 3:
+                continue
+            valid.append({"comment": c, "clean": cleaned_safe})
+            texts_to_score.append(cleaned_safe)
+
+        if not texts_to_score:
+            return json_response([], status_code=200)
+
+        scored = ai_language_sentiment_batch(texts_to_score, min_margin=SENTIMENT_MIN_MARGIN)
+
+        rows: List[Dict[str, Any]] = []
+        for item, (label, scores) in zip(valid, scored):
+            c = item["comment"]
+            cleaned_safe = item["clean"]
+            raw = c.get("text_raw", "") or ""
+            post_id = c.get("_id") or f"youtube:comment:{uuid.uuid4().hex}"
+            created_at = parse_iso_datetime(c.get("created_at"))
+
+            try:
+                upsert_post_scored(
+                    post_id=post_id,
+                    platform="youtube",
+                    topic=topic,
+                    text_raw=raw,
+                    clean=cleaned_safe,
+                    created_at=created_at,
+                    ingested_at=ingested_at,
+                    scored_at=now_scored,
+                    sentiment_label=label,
+                    sentiment_scores_json=json.dumps(scores, ensure_ascii=False),
+                )
+            except Exception as e:
+                logger.warning("youtube_search: upsert failed id=%s: %s", post_id, e)
+
+            rows.append({
+                "_id": post_id,
+                "platform": "youtube",
+                "topic": topic,
+                "clean_text": cleaned_safe,
+                "sentiment": {"azure_ai": {"label": label, "scores": scores}},
+                "scored_at": now_scored.isoformat(),
+                "created_at": created_at.isoformat() if created_at else None,
+            })
+
+        logger.info(
+            "youtube_search: returned=%d skipped=%d videos=%d topic=%s query=%r",
+            len(rows), len(all_comments) - len(rows), len(video_ids), topic, query,
+        )
+        return json_response(rows, status_code=200)
+
+    except Exception as e:
+        logger.exception("youtube_search failed: %s", e)
+        return func.HttpResponse(f"youtube_search failed: {type(e).__name__}: {e}", status_code=500)
+
+
 @app.route(route="ingest/twitter", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
 @app.queue_output(arg_name="outmsg", queue_name="ingest-queue", connection="AzureWebJobsStorage")
 def ingest_twitter(req: func.HttpRequest, outmsg: func.Out[List[str]]) -> func.HttpResponse:
@@ -1178,14 +1511,7 @@ def ingest_twitter(req: func.HttpRequest, outmsg: func.Out[List[str]]) -> func.H
             body = {}
 
         topic = normalize_topic(body.get("topic") or os.getenv("TOPIC_DEFAULT", DEFAULT_TOPIC))
-        query = (body.get("query") or "").strip()
-
-        if not query:
-            return func.HttpResponse(
-                json.dumps({"ok": False, "error": "query is required for Twitter search"}),
-                status_code=400,
-                mimetype="application/json",
-            )
+        query = (body.get("query") or os.getenv("TWITTER_QUERY", DEFAULT_TWITTER_QUERY) or DEFAULT_TWITTER_QUERY).strip()
 
         max_results = safe_int(
             body.get("max_results", os.getenv("TWITTER_MAX_RESULTS_DEFAULT", str(TWITTER_MAX_RESULTS))),

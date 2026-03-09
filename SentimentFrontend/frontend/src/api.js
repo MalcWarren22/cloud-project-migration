@@ -1,7 +1,7 @@
 // src/api.js
 const API = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, ""); // trim trailing slash
 
-// This is what App.jsx is importing: { apiUrl, fetchRecent, fetchTopics, ingestYouTube, ingestTwitter }
+// Exports: apiUrl, fetchRecent, fetchTopics, ingestYouTube, ingestTwitter, youtubeSearchSync, twitterSearchSync
 export function apiUrl(path = "") {
   const p = String(path || "");
   if (!p) return API;
@@ -84,12 +84,34 @@ export async function ingestYouTube({
   });
 }
 
-export async function ingestTwitter({
-  topic,
-  query,
-  max_results = 100,
-} = {}) {
+export async function ingestTwitter({ topic, query, max_results = 100 } = {}) {
   return httpJson(apiUrl("/ingest/twitter"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      topic,
+      query,
+      max_results,
+    }),
+  });
+}
+
+export async function youtubeSearchSync({ topic, query, max_videos = 5, comments_per_video = 200, videoId } = {}) {
+  return httpJson(apiUrl("/youtube/search"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      topic,
+      query,
+      max_videos,
+      comments_per_video,
+      videoId,
+    }),
+  });
+}
+
+export async function twitterSearchSync({ topic, query, max_results = 100 } = {}) {
+  return httpJson(apiUrl("/twitter/search"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

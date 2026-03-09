@@ -55,25 +55,31 @@ variable "function_integration_subnet_id" {
 
 variable "ai_language_key_secret_name" {
   type = string
+  description = "The AI Language Key Secret Name"
 }
 
 variable "sql_admin_username" {
   type    = string
   default = "sqladminuser"
+  description = "Name of the SQL Admin Username"
 }
 
 variable "sqlcon_secret_name" {
   type = string
+  description = "SQL Connection String Name"
 }
 
 variable "key_vault_id" {
   type = string
+  description = "ID of the Key Vault"
 }
 
 variable "ad_object_id" {
   type = string
+  description = "Active Directory object ID"
 }
 
 variable "app_insights_connection_string" {
   type = string
+  description = "App Insights Connection String"
 }

@@ -83,7 +83,7 @@ resource "azurerm_linux_function_app" "this" {
    app_settings = {
   AI_LANGUAGE_ENDPOINT = azurerm_cognitive_account.this.endpoint
 
-  # Direct Key Vault references (resolved by the Function at runtime via managed identity RBAC)
+  
   AI_LANGUAGE_KEY = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/${var.ai_language_key_secret_name}/)"
   SQLCON = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/${var.sqlcon_secret_name}/)"
   YOUTUBE_API_KEY      = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/youtube-api-key)"

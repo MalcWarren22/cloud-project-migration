@@ -1,6 +1,6 @@
 // src/App.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
-import { fetchRecent, fetchTopics, apiUrl, ingestYouTube, ingestTwitter } from "./api";
+import { fetchRecent, fetchTopics, apiUrl, youtubeSearchSync, twitterSearchSync } from "./api";
 
 /* ----------------------------
    UI bits
@@ -381,7 +381,7 @@ function TrendChart({ series, granularity = "day" }) {
         <div className="trendTitle">Sentiment trend</div>
         <div className="trendSub">
           Net signal = (pos − neg) / (pos + neg) per{" "}
-          {granularity === "hour" ? "hour" : "day"} · neutral excluded
+          {granularity === "hour" ? "hour" : granularity === "week" ? "week" : "day"} · neutral excluded · min 3 posts/bucket
         </div>
         <div className="trendLegend">
           {series.map((s) => (
@@ -674,24 +674,63 @@ export default function App() {
 
     try {
       if (doIngest) {
-        if (source === "youtube" || source === "both") {
-          setLoadPhase("Ingesting from YouTube…");
-          await ingestYouTube({
+        if (source === "youtube") {
+          setLoadPhase("Searching YouTube…");
+          const ytData = await youtubeSearchSync({
             topic: topic || "demo",
             query: qText,
             max_videos: 5,
-            comments_per_video: 500,
+            comments_per_video: 200,
           });
+          setRows(Array.isArray(ytData) ? ytData : []);
+          setTablePage(1);
+          setLastRefreshed(new Date());
+          setApiStatus("online");
+          setLastCheck(new Date());
+          return;
         }
-        if (source === "twitter" || source === "both") {
-          setLoadPhase("Ingesting from X / Twitter…");
-          await ingestTwitter({
+
+        if (source === "twitter") {
+          setLoadPhase("Fetching and scoring from X / Twitter…");
+          const twitterData = await twitterSearchSync({
             topic: topic || "demo",
             query: qText,
             max_results: 100,
           });
+          setRows(Array.isArray(twitterData) ? twitterData : []);
+          setTablePage(1);
+          setLastRefreshed(new Date());
+          setApiStatus("online");
+          setLastCheck(new Date());
+          return;
         }
-        await sleep(600);
+
+        if (source === "both") {
+          setLoadPhase("Searching YouTube + X / Twitter…");
+          const [ytData, twitterData] = await Promise.all([
+            youtubeSearchSync({
+              topic: topic || "demo",
+              query: qText,
+              max_videos: 5,
+              comments_per_video: 200,
+            }),
+            twitterSearchSync({
+              topic: topic || "demo",
+              query: qText,
+              max_results: 100,
+            }),
+          ]);
+          const combined = [
+            ...(Array.isArray(ytData) ? ytData : []),
+            ...(Array.isArray(twitterData) ? twitterData : []),
+          ];
+          setRows(combined);
+          setTablePage(1);
+          setLastRefreshed(new Date());
+          setApiStatus("online");
+          setLastCheck(new Date());
+          return;
+        }
       }
 
       setLoadPhase("Loading data…");
@@ -730,6 +769,7 @@ export default function App() {
       }
 
       setRows(data);
+      setTablePage(1);
       setLastRefreshed(new Date());
       setApiStatus("online");
       setLastCheck(new Date());
@@ -828,17 +868,35 @@ export default function App() {
   }, [sumIphone.netSignal, sumAndroid.netSignal]);
 
   const trend = useMemo(() => {
-    const granularity = rows.length > 800 ? "hour" : "day";
+    const allDates = rows
+      .map((r) => toDateSafe(r?.created_at) ?? toDateSafe(r?.scored_at))
+      .filter(Boolean);
+
+    if (!allDates.length) return { granularity: "day", series: [] };
+
+    const minMs = Math.min(...allDates.map((d) => d.getTime()));
+    const maxMs = Math.max(...allDates.map((d) => d.getTime()));
+    const spanDays = (maxMs - minMs) / (1000 * 60 * 60 * 24);
+
+    const granularity = spanDays <= 3 ? "hour" : spanDays <= 60 ? "day" : "week";
+    const MIN_BUCKET = 3;
+
+    function weekStart(d) {
+      const copy = new Date(d);
+      copy.setDate(copy.getDate() - copy.getDay());
+      return copy;
+    }
 
     function bucketKey(d) {
-      const yyyy = d.getFullYear();
-      const mm = String(d.getMonth() + 1).padStart(2, "0");
-      const dd = String(d.getDate()).padStart(2, "0");
+      const fmt = (x) => String(x).padStart(2, "0");
       if (granularity === "hour") {
-        const hh = String(d.getHours()).padStart(2, "0");
-        return `${yyyy}-${mm}-${dd} ${hh}`;
+        return `${d.getFullYear()}-${fmt(d.getMonth() + 1)}-${fmt(d.getDate())} ${fmt(d.getHours())}`;
       }
-      return `${yyyy}-${mm}-${dd}`;
+      if (granularity === "week") {
+        const ws = weekStart(d);
+        return `${ws.getFullYear()}-${fmt(ws.getMonth() + 1)}-${fmt(ws.getDate())}`;
+      }
+      return `${d.getFullYear()}-${fmt(d.getMonth() + 1)}-${fmt(d.getDate())}`;
     }
 
     function netSignalForRows(rowsInBucket) {
@@ -856,14 +914,16 @@ export default function App() {
     function buildSeries(name, rowsArr, tone) {
       const map = new Map();
       for (const r of rowsArr) {
-        const d = toDateSafe(r?.scored_at);
+        const d = toDateSafe(r?.created_at) ?? toDateSafe(r?.scored_at);
         if (!d) continue;
         const k = bucketKey(d);
         if (!map.has(k)) map.set(k, []);
         map.get(k).push(r);
       }
       const keys = Array.from(map.keys()).sort();
-      const points = keys.map((k) => ({ xKey: k, y: netSignalForRows(map.get(k)) }));
+      const points = keys
+        .filter((k) => map.get(k).length >= MIN_BUCKET)
+        .map((k) => ({ xKey: k, y: netSignalForRows(map.get(k)) }));
       return { name, tone, points };
     }
 
@@ -1237,7 +1297,7 @@ export default function App() {
                   </div>
                   <div className="onboardStep">
                     <div className="onboardStepNum">2</div>
-                    <div className="onboardStepText"><strong>We fetch YouTube comments</strong> using the Azure backend and score them with Azure AI Language</div>
+                    <div className="onboardStepText"><strong>We fetch YouTube comments or X / Twitter posts</strong> using the Azure backend and score them with Azure AI Language</div>
                   </div>
                   <div className="onboardStep">
                     <div className="onboardStepNum">3</div>
@@ -1455,7 +1515,7 @@ export default function App() {
                       <div className="emptyState">
                         <div className="emptyStateIcon">📊</div>
                         <div className="emptyStateText">No data yet</div>
-                        <div className="emptyStateSub">Enter a search query and click Search to pull YouTube comments</div>
+                        <div className="emptyStateSub">Enter a search query and click Search YouTube, Search X, or Search Both</div>
                       </div>
                     </td>
                   </tr>

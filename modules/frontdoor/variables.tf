@@ -30,4 +30,5 @@ variable "functions_origin_host" {
 variable "enable_waf" {
   type = bool
   default = true
+  description = "Status of the Azure Front Door's Web Application Firewall"
 }
