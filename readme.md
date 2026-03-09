@@ -55,7 +55,7 @@ This design aligns with Azure’s **Zero Trust security model** and cloud-native
 
 ---
 
-# 🏗 Infrastructure as Code (Terraform)
+# Infrastructure as Code (Terraform)
 
 The Azure infrastructure is deployed using **Terraform**, allowing the environment to be fully reproducible and version-controlled.
 
@@ -69,12 +69,14 @@ Terraform provisions resources such as:
 - Azure AI Language Service
 - Azure Front Door + WAF
 - Networking and access policies
+- Managed Identities
+- LAW / Diagnostics
 
 Using IaC ensures consistent deployments across development environments and simplifies updates to the infrastructure.
 
 ---
 
-# 🧭 Alignment with the Microsoft Well-Architected Framework
+# Alignment with the Microsoft Well-Architected Framework
 
 The migration was designed with guidance from the **Microsoft Well-Architected Framework**, which emphasizes five core pillars for building reliable cloud systems.
 
