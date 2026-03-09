@@ -18,11 +18,6 @@ variable "project_name" {
   type = string
 }
 
-variable "tags" {
-  description = "Tags for the Project"
-  type = map(string)
-}
-
 variable "vnet_address_space" {
   description = "The Address space of the Virtual Network"
   type = list(string)

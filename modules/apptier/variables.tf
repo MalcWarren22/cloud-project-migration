@@ -18,16 +18,6 @@ variable "resource_group_name" {
   type = string
 }
 
-variable "tags" {
-  description = "Tags for the Project"
-  type = map(string)
-}
-
-variable "enable_aml" {
-  description = "Enables Azure Machine Learning"
-  type = string
-}
-
 variable "enable_event_hubs" {
   description = "Enables Azures Event Hubs"
   type = string

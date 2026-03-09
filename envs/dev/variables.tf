@@ -13,26 +13,16 @@ variable "location" {
   description = "Azure region."
 }
 
-variable "tags" {
-  type        = map(string)
-  description = "Common resource tags."
-  default     = {}
-}
-
-
 variable "enable_event_hubs" {
   type    = bool
   default = false
+  description = "Enables Event Hubs for Data ingestion if necessary"
 }
 
 variable "enable_private_endpoints" {
   type    = bool
   default = false
-}
-
-variable "enable_aml" {
-  type    = bool
-  default = true
+  description = "Enables Private Endpoints on PAAS services"
 }
 
 variable "tenant_id" {
@@ -47,17 +37,10 @@ variable "kv_name" {
 
 variable "ai_language_key_secret_name" {
   type = string
+  description = "The Name for Azure AI Language Secret Key"
 }
 
 variable "sqlcon_secret_name" {
   type = string
-}
-
-variable "my_public_ip_cidr" {
-  type    = string
-  default = null
-}
-
-variable "app_fqdn" {
-  type = string
+  description = "Name of the SQL Connection string secret"
 }

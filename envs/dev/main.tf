@@ -18,7 +18,6 @@ module "networking" {
   project_name        = var.project_name
   environment         = var.environment
   location            = var.location
-  tags                = var.tags
 }
 
 module "apptier" {
@@ -27,11 +26,9 @@ module "apptier" {
   project_name                   = var.project_name
   environment                    = var.environment
   location                       = var.location
-  tags                           = var.tags
   function_integration_subnet_id = module.networking.function_integration_subnet_id
   enable_event_hubs              = var.enable_event_hubs
   enable_private_endpoints       = var.enable_private_endpoints
-  enable_aml                     = var.enable_aml
   tenant_id                      = var.tenant_id
   key_vault_uri                  = module.security.key_vault_uri
   ai_language_key_secret_name    = var.ai_language_key_secret_name

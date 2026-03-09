@@ -1,0 +1,17 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+
+    "ENV": "dev",
+    "TOPIC_DEFAULT": "demo",
+
+    "AI_LANGUAGE_ENDPOINT": "https://<your-ai-language>.cognitiveservices.azure.com",
+    "AI_LANGUAGE_KEY": "<key>",
+
+    "SQL_CONNECTION": "mongodb://<user>:<pass>@<host>:10255/?ssl=true&retrywrites=false",
+    "SQL_DB_NAME": "sentiment",
+    "SQL_COLLECTION": "posts_scored"
+  }
+}
