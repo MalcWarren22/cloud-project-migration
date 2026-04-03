@@ -11,6 +11,7 @@ on:
       - 'envs/**'
       - 'modules/**'
       - '.github/workflows/infra.yml'
+
   pull_request:
     branches:
       - main
@@ -35,6 +36,11 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.8.5
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Terraform Format Check
         run: terraform fmt -check -recursive
