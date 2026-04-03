@@ -14,7 +14,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: SentimentFrontend
+        working-directory: SentimentFrontend/frontend
 
     steps:
       - name: Checkout repo
@@ -36,5 +36,5 @@ jobs:
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
           action: "upload"
-          app_location: "SentimentFrontend"
+          app_location: "SentimentFrontend/frontend"
           output_location: "dist"
