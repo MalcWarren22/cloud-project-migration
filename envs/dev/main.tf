@@ -4,13 +4,13 @@ resource "azurerm_resource_group" "this" {
 }
 
 module "identities" {
-  source                = "../../modules/identities"
-  storage_account_id    = module.apptier.storage_id
-  key_vault_id          = module.security.key_vault_id
-  function_principal_id = module.apptier.function_principal_id
-  cognitive_account_id  = module.apptier.cognitive_id
-  location              = var.location
-  sql_admins_group_name = var.sql_admins_group_name
+  source                     = "../../modules/identities"
+  storage_account_id         = module.apptier.storage_id
+  key_vault_id               = module.security.key_vault_id
+  function_principal_id      = module.apptier.function_principal_id
+  cognitive_account_id       = module.apptier.cognitive_id
+  location                   = var.location
+  sql_admins_group_name      = var.sql_admins_group_name
   sql_admins_group_object_id = var.sql_admins_group_object_id
 }
 
