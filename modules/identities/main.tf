@@ -1,5 +1,7 @@
 data "azuread_group" "sql_admins" {
   security_enabled = true
+  display_name = var.sql_admins_group_name
+  object_id = var.sql_admins_group_object_id
 }
 
 resource "azurerm_role_assignment" "kv_secrets_user" {
