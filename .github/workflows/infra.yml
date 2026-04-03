@@ -1,0 +1,53 @@
+name: Infra CI/CD
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - 'envs/**'
+      - 'modules/**'
+      - '.github/workflows/infra.yml'
+  pull_request:
+    branches:
+      - main
+      - dev
+    paths:
+      - 'envs/**'
+      - 'modules/**'
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: envs/dev
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.5
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        run: terraform apply -auto-approve tfplan
