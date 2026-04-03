@@ -1,7 +1,7 @@
 output "display_name" {
-  value = azuread_group.sql_admins.display_name
+  value = data.azuread_group.sql_admins
 }
 
 output "object_id" {
-  value = azuread_group.sql_admins.object_id
+  value = data.azuread_group.sql_admins
 }
