@@ -1,4 +1,4 @@
-resource "azuread_group" "sql_admins" {
+data "azuread_group" "sql_admins" {
   display_name     = "sql-admins-sentiment"
   security_enabled = true
 }
