@@ -18,3 +18,46 @@ resource "azurerm_api_management_api" "this" {
 
   service_url = var.backend_url
 }
+
+resource "azurerm_api_management_api_policy" "cors" {
+api_management_name = azurerm_api_management.this.name
+api_name = azurerm_api_management_api.this.name
+resource_group_name = var.resource_group_name
+
+  xml_content = <<XML
+<policies>
+  <inbound>
+    <base />
+    <cors allow-credentials="false">
+      <allowed-origins>
+        <origin>https://azurefd-dev-sentimentanalysisproject-d7fdagh0dhfrerdx.z01.azurefd.net</origin>
+        <origin>http://localhost:5173</origin>
+      </allowed-origins>
+      <allowed-methods preflight-result-max-age="300">
+        <method>GET</method>
+        <method>POST</method>
+        <method>OPTIONS</method>
+      </allowed-methods>
+      <allowed-headers>
+        <header>*</header>
+      </allowed-headers>
+      <expose-headers>
+        <header>*</header>
+      </expose-headers>
+    </cors>
+  </inbound>
+
+  <backend>
+    <base />
+  </backend>
+
+  <outbound>
+    <base />
+  </outbound>
+
+  <on-error>
+    <base />
+  </on-error>
+</policies>
+XML
+}
