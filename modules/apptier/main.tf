@@ -89,10 +89,13 @@ resource "azurerm_linux_function_app" "this" {
     FUNCTIONS_WORKER_RUNTIME              = "python"
     FUNCTIONS_EXTENSION_VERSION           = "~4"
 
-    AzureWebJobsFeatureFlags = "EnableWorkerIndexing"
+    SCM_DO_BUILD_DURING_DEPLOYMENT = true
+    ENABLE_ORYX_BUILD = true
 
+    AzureWebJobsFeatureFlags = "EnableWorkerIndexing"
+    
     AzureWebJobsStorage__accountName = azurerm_storage_account.this.name
-    WEBSITE_RUN_FROM_PACKAGE         = "1"
+    WEBSITE_RUN_FROM_PACKAGE         = "0"
 
     TOPIC_DEFAULT = "demo"
     ENV           = var.environment
