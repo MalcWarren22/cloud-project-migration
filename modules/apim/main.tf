@@ -17,6 +17,9 @@ resource "azurerm_api_management_api" "this" {
   protocols = ["https"]
 
   service_url = var.backend_url
+
+    #For Lab Purposes
+  subscription_required = false
 }
 
 resource "azurerm_api_management_api_policy" "cors" {
