@@ -89,6 +89,8 @@ resource "azurerm_linux_function_app" "this" {
     FUNCTIONS_WORKER_RUNTIME              = "python"
     FUNCTIONS_EXTENSION_VERSION           = "~4"
 
+    AzureWebJobsFeatureFlags = "EnableWorkerIndexing"
+
     AzureWebJobsStorage__accountName = azurerm_storage_account.this.name
     WEBSITE_RUN_FROM_PACKAGE         = "1"
 
@@ -97,6 +99,13 @@ resource "azurerm_linux_function_app" "this" {
   }
 
   site_config {
+    cors {
+      allowed_origins = [
+        "https://azurefd-dev-sentimentanalysisproject-d7fdagh0dhfrerdx.z01.azurefd.net",
+        "http://localhost:5173",
+        "https://portal.azure.com"
+      ]
+    }
     always_on              = true
     vnet_route_all_enabled = true
     application_stack {
