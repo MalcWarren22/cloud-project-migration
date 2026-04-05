@@ -78,7 +78,7 @@ resource "azurerm_linux_function_app" "this" {
 
 
     AI_LANGUAGE_KEY             = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/${var.ai_language_key_secret_name}/)"
-    SQLCON                      = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/${var.sqlcon_secret_name}/)"
+    SQLCON                      = "Driver={ODBC Driver 18 for SQL Server};Server=tcp:sql-dev-db-44v3.database.windows.net,1433;Database=sentiment;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;Authentication=ActiveDirectoryMsi;"
     YOUTUBE_API_KEY             = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/youtube-api-key)"
     TWITTER_ACCESS_TOKEN        = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/twitter-access-token)"
     TWITTER_ACCESS_TOKEN_SECRET = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/twitter-access-token-secret)"
