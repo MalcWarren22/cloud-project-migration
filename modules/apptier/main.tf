@@ -31,7 +31,7 @@ resource "azurerm_mssql_server" "this" {
 resource "azurerm_mssql_database" "this" {
   name      = "sentiment"
   server_id = azurerm_mssql_server.this.id
-  sku_name  = "Basic"
+  sku_name  = "S1"
 }
 resource "azurerm_mssql_firewall_rule" "allow_azure" {
   name             = "AllowAzureServices"
